@@ -1,0 +1,80 @@
+#Library
+library(Seurat)
+library(dplyr)
+library(ggsci)
+library(Matrix)
+library(ggpubr)
+library(cowplot)
+library(gridExtra)
+library(gplots)
+library(ggplot2)
+library(ggnewscale)
+
+##Read object
+TN.combined <- readRDS(file = "D:/scRNA_KGD/20230826_10X_TN7172289/filter/TN.combined_19_20231101.rds")
+F.subgroup <- subset(TN.combined, idents = c(2,3))
+DefaultAssay(F.subgroup) <- "RNA"
+#Show QC metrics for the first 5 cells
+head(F.subgroup@meta.data, 5)
+#Set splitobject file
+F.list<- SplitObject(F.subgroup, split.by = "orig.ident")
+F.list
+F.list <- lapply(X = F.list, FUN = function(x) {
+  x <- NormalizeData(x,normalization.method = "LogNormalize", scale.factor = 10000)
+  x <- FindVariableFeatures(x, selection.method = "vst", nfeatures = 2000)
+})
+#Perform integration 
+F.reference.list <- F.list[c("SP1_AK_TN71","SP2_AK_TN72","SP3_AK_TN289")]
+F.anchors <- FindIntegrationAnchors(object.list = F.reference.list, dims = 1:30)
+F.combined <- IntegrateData(anchorset = F.anchors, dims = 1:30)
+##Perform an integrated analysis
+DefaultAssay(F.combined) <- "integrated"
+F.combined <- ScaleData(F.combined, verbose = TRUE)
+F.combined <- RunPCA(F.combined, npcs = 50, verbose = TRUE)
+ElbowPlot(F.combined, ndims= 50)
+# Cluster the cells 
+F.combined <- FindNeighbors(F.combined, reduction = "pca", dims = 1:30)
+F.combined <- FindClusters(F.combined, resolution = 0.18)
+table(F.combined@active.ident)
+table(Idents(F.combined), F.combined$orig.ident2)
+#Run UMAP
+F.combined <- RunUMAP(F.combined, reduction = "pca", dims = 1:30)
+DimPlot(F.combined, reduction = "umap",label = FALSE, pt.size = 0.8)
+DimPlot(F.combined, group.by = "orig.ident1", pt.size = 0.8)
+#Run heatmap
+Heatmapall <- subset(F.combined, idents = c(0,1,2,3,4))
+Heatmapall.markers <- FindAllMarkers(Heatmapall, only.pos = TRUE, min.pct = 0.1, logfc.threshold = 0.25)
+head(Heatmapall.markers)
+write.csv(Heatmapall.markers , file = "C:/Users/user/Desktop/F.allmarkers.csv", col.names = TRUE) 
+top10 <- Heatmapall.markers %>% group_by(cluster) %>% top_n(n = 10, wt = avg_log2FC)
+DoHeatmap(Heatmapall, features = top10$gene)
+
+
+##Rename cluster 
+new.cluster.ids <- c("Fs0","Fs1","Fs2","Fs3","Fs4")
+names(new.cluster.ids) <- levels(F.combined)
+Fname.subgroup <- RenameIdents(F.combined, new.cluster.ids)
+DimPlot(Fname.subgroup, reduction = "umap",label = FALSE, pt.size = 0.8)
+DimPlot(Fname.subgroup, group.by = "orig.ident1", pt.size = 0.8, cols = c("#00BFC4","#F8766D"))
+
+
+##Pathway analysis by clusterProfiler package
+#Library
+library(clusterProfiler)
+#Find markers
+cluster.markers <- FindMarkers(object = F.combined, ident.1 = "0", logfc.threshold = 0.25, only.pos = TRUE)
+write.csv(cluster.markers , file = "C:/Users/user/Desktop/Fs0.allmarkers.csv", col.names = TRUE) 
+cluster <- row.names.data.frame(cluster.markers)
+cluster <- bitr(cluster,fromType = "SYMBOL",toType = c("ENTREZID"),OrgDb = "org.Hs.eg.db")
+#GO pathway analysis
+cluster.go<-enrichGO(gene=cluster[,"ENTREZID"],keyType = "ENTREZID",OrgDb="org.Hs.eg.db",ont = "ALL",pAdjustMethod = "BH",readable = TRUE)
+head(summary(cluster.go))
+dotplot(cluster.go,showCategory=10)
+write.csv(cluster.go, file = "C:/Users/user/Desktop/Fs0_GO.csv")
+
+
+#Draw Dotplot
+DefaultAssay(Fname.subgroup) <- "RNA"
+#Representive markers of fibroblast subgroup 
+markers.to.plot <- c("CCL19","APOD","WNT5A","COL18A1","MFAP5","TSPAN8","ASPN","POSTN","COL1A1","COL3A1","CD74","SRGN","CRABP1","TNN")
+DotPlot(Fname.subgroup, features = markers.to.plot, cols = c("white", "darkred"), dot.scale = 8) + RotatedAxis()

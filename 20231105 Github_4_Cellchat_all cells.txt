@@ -1,0 +1,242 @@
+#Library
+library(CellChat)
+library(patchwork)
+library(ggplot2)                  
+library(patchwork)
+library(ggalluvial)
+library(igraph)
+library(dplyr)
+library(Seurat)
+options(stringsAsFactors = FALSE)
+
+##Read object
+TN.combined <- readRDS(file = "D:/scRNA_KGD/20230826_10X_TN7172289/filter/TN.combined_19_20231101.rds")
+##Rename cluster (for example：Fibroblast、Macrophage......)
+new.cluster.ids <- c("C0_vEC","C1_vEC","C2_FB","C3_FB","C4_Tcell","C5_KC", 
+                     "C6_KC","C7_MYL","C8_Bcell","C9_SMC","C10_Tcell","C11_SMC",
+                     "C12_KC","C13_Bcell","C14_KC","C15_lEC","C16_unknown","C17_MLA",
+                     "C18_MC")
+names(new.cluster.ids) <- levels(TN.combined)
+TNname.combined <- RenameIdents(TN.combined, new.cluster.ids)
+DimPlot(TNname.combined, reduction = "umap",label = FALSE, pt.size = 0.8)
+
+##Split object
+Split_cellchat.list<- SplitObject(TNname.combined, split.by = "orig.ident1")
+Split_cellchat.list
+Split1 <-Split_cellchat.list$'1_nonlesion'
+Split2 <-Split_cellchat.list$'2_lesion'
+
+DefaultAssay(Split1) <- "RNA"
+DefaultAssay(Split2) <- "RNA"
+
+##Run 1_nonlesion sample
+##Data input & processing and initialization of CellChat object
+#Extract the CellChat input files from a Seurat V3 object
+data.input <- GetAssayData(Split1, assay = "RNA", slot = "data") # normalized data matrix
+labels <- Idents(Split1)
+meta <- data.frame(group = labels, row.names = names(labels)) # create a dataframe of the cell labels
+
+#Create a CellChat object using data matrix as input
+cellchat <- createCellChat(object = data.input, meta = meta, group.by = "group")
+
+#Add cell information into meta slot of the object
+cellchat <- addMeta(cellchat, meta = meta, meta.name = "labels")
+cellchat <- setIdent(cellchat, ident.use = "labels") # set "labels" as default cell identity
+levels(cellchat@idents) # show factor levels of the cell labels
+groupSize <- as.numeric(table(cellchat@idents)) # number of cells in each cell group
+
+#Set the ligand-receptor interaction database
+CellChatDB <- CellChatDB.human # use CellChatDB.mouse if running on mouse data
+showDatabaseCategory(CellChatDB)
+##Download all interaction pathways of CellChatDB
+CellChatDB$interaction
+write.csv(CellChatDB$interaction, file="C:/Users/user/Desktop/CellChatDB$interaction.csv", row.names=FALSE)
+
+# Show the structure of the database
+dplyr::glimpse(CellChatDB$interaction)
+#> Rows: 1,939
+#> Columns: 11
+#> $ interaction_name   <chr> "TGFB1_TGFBR1_TGFBR2", "TGFB2_TGFBR1_TGFBR2", "TGF…
+#> $ pathway_name       <chr> "TGFb", "TGFb", "TGFb", "TGFb", "TGFb", "TGFb", "T…
+#> $ ligand             <chr> "TGFB1", "TGFB2", "TGFB3", "TGFB1", "TGFB1", "TGFB…
+#> $ receptor           <chr> "TGFbR1_R2", "TGFbR1_R2", "TGFbR1_R2", "ACVR1B_TGF…
+#> $ agonist            <chr> "TGFb agonist", "TGFb agonist", "TGFb agonist", "T…
+#> $ antagonist         <chr> "TGFb antagonist", "TGFb antagonist", "TGFb antago…
+#> $ co_A_receptor      <chr> "", "", "", "", "", "", "", "", "", "", "", "", ""…
+#> $ co_I_receptor      <chr> "TGFb inhibition receptor", "TGFb inhibition recep…
+#> $ evidence           <chr> "KEGG: hsa04350", "KEGG: hsa04350", "KEGG: hsa0435…
+#> $ annotation         <chr> "Secreted Signaling", "Secreted Signaling", "Secre…
+#> $ interaction_name_2 <chr> "TGFB1 - (TGFBR1+TGFBR2)", "TGFB2 - (TGFBR1+TGFBR2…
+
+##Download all interaction pathways of CellChatDB
+#CellChatDB$interaction
+#write.csv(CellChatDB$interaction, file="C:/Users/user/Desktop/CellChatDB$interaction", row.names=FALSE)
+
+# use a subset of CellChatDB for cell-cell communication analysis
+#CellChatDB.use <- subsetDB(CellChatDB, search = "") # use Secreted Signaling
+# use all CellChatDB for cell-cell communication analysis
+CellChatDB.use <- CellChatDB # simply use the default CellChatDB
+
+# set the used database in the object
+cellchat@DB <- CellChatDB.use
+
+#Preprocessing the expression data for cell-cell communication analysis
+cellchat <- subsetData(cellchat) # subset the expression data of signaling genes for saving computation cost
+future::plan("multisession", workers = 4) # do parallel
+#> Warning: [ONE-TIME WARNING] Forked processing ('multicore') is disabled
+#> in future (>= 1.13.0) when running R from RStudio, because it is
+#> considered unstable. Because of this, plan("multicore") will fall
+#> back to plan("sequential"), and plan("multiprocess") will fall back to
+#> plan("multisession") - not plan("multicore") as in the past. For more details,
+#> how to control forked processing or not, and how to silence this warning in
+#> future R sessions, see ?future::supportsMulticore
+cellchat <- identifyOverExpressedGenes(cellchat)
+cellchat <- identifyOverExpressedInteractions(cellchat)
+cellchat <- projectData(cellchat, PPI.human)
+
+#Inference of cell-cell communication network
+#Compute the communication probability and infer cellular communication network
+cellchat <- computeCommunProb(cellchat, raw.use = TRUE)
+# Filter out the cell-cell communication if there are only few number of cells in certain cell groups
+cellchat <- filterCommunication(cellchat, min.cells = 3)
+
+#Extract the inferred cellular communication network as a data frame
+df.net <- subsetCommunication(cellchat)
+
+#Infer the cell-cell communication at a signaling pathway level
+cellchat <- computeCommunProbPathway(cellchat)
+
+#Calculate the aggregated cell-cell communication network
+cellchat <- aggregateNet(cellchat)
+
+#Save the CellChat object
+saveRDS(cellchat, file = "D:/scRNA_KGD/20230826_10X_TN7172289/filter/TN.combined_19_20231101_Cellchat1_nonlesion.rds")
+cellchat <- readRDS(file = "D:/scRNA_KGD/20220914_10X_Keloid/filter/TN.combined_19_20231101_Cellchat1_nonlesion.rds")
+
+
+
+##Run 2_lesion sample
+##Data input & processing and initialization of CellChat object
+#Extract the CellChat input files from a Seurat V3 object
+data.input <- GetAssayData(Split2, assay = "RNA", slot = "data") # normalized data matrix
+labels <- Idents(Split2)
+meta <- data.frame(group = labels, row.names = names(labels)) # create a dataframe of the cell labels
+
+#Create a CellChat object using data matrix as input
+cellchat <- createCellChat(object = data.input, meta = meta, group.by = "group")
+
+#Add cell information into meta slot of the object
+cellchat <- addMeta(cellchat, meta = meta, meta.name = "labels")
+cellchat <- setIdent(cellchat, ident.use = "labels") # set "labels" as default cell identity
+levels(cellchat@idents) # show factor levels of the cell labels
+groupSize <- as.numeric(table(cellchat@idents)) # number of cells in each cell group
+
+#Set the ligand-receptor interaction database
+CellChatDB <- CellChatDB.human # use CellChatDB.mouse if running on mouse data
+showDatabaseCategory(CellChatDB)
+##Download all interaction pathways of CellChatDB
+CellChatDB$interaction
+write.csv(CellChatDB$interaction, file="C:/Users/user/Desktop/CellChatDB$interaction.csv", row.names=FALSE)
+
+# Show the structure of the database
+dplyr::glimpse(CellChatDB$interaction)
+#> Rows: 1,939
+#> Columns: 11
+#> $ interaction_name   <chr> "TGFB1_TGFBR1_TGFBR2", "TGFB2_TGFBR1_TGFBR2", "TGF…
+#> $ pathway_name       <chr> "TGFb", "TGFb", "TGFb", "TGFb", "TGFb", "TGFb", "T…
+#> $ ligand             <chr> "TGFB1", "TGFB2", "TGFB3", "TGFB1", "TGFB1", "TGFB…
+#> $ receptor           <chr> "TGFbR1_R2", "TGFbR1_R2", "TGFbR1_R2", "ACVR1B_TGF…
+#> $ agonist            <chr> "TGFb agonist", "TGFb agonist", "TGFb agonist", "T…
+#> $ antagonist         <chr> "TGFb antagonist", "TGFb antagonist", "TGFb antago…
+#> $ co_A_receptor      <chr> "", "", "", "", "", "", "", "", "", "", "", "", ""…
+#> $ co_I_receptor      <chr> "TGFb inhibition receptor", "TGFb inhibition recep…
+#> $ evidence           <chr> "KEGG: hsa04350", "KEGG: hsa04350", "KEGG: hsa0435…
+#> $ annotation         <chr> "Secreted Signaling", "Secreted Signaling", "Secre…
+#> $ interaction_name_2 <chr> "TGFB1 - (TGFBR1+TGFBR2)", "TGFB2 - (TGFBR1+TGFBR2…
+
+##Download all interaction pathways of CellChatDB
+#CellChatDB$interaction
+#write.csv(CellChatDB$interaction, file="C:/Users/user/Desktop/CellChatDB$interaction", row.names=FALSE)
+
+# use a subset of CellChatDB for cell-cell communication analysis
+#CellChatDB.use <- subsetDB(CellChatDB, search = "") # use Secreted Signaling
+# use all CellChatDB for cell-cell communication analysis
+CellChatDB.use <- CellChatDB # simply use the default CellChatDB
+
+# set the used database in the object
+cellchat@DB <- CellChatDB.use
+
+#Preprocessing the expression data for cell-cell communication analysis
+cellchat <- subsetData(cellchat) # subset the expression data of signaling genes for saving computation cost
+future::plan("multisession", workers = 4) # do parallel
+#> Warning: [ONE-TIME WARNING] Forked processing ('multicore') is disabled
+#> in future (>= 1.13.0) when running R from RStudio, because it is
+#> considered unstable. Because of this, plan("multicore") will fall
+#> back to plan("sequential"), and plan("multiprocess") will fall back to
+#> plan("multisession") - not plan("multicore") as in the past. For more details,
+#> how to control forked processing or not, and how to silence this warning in
+#> future R sessions, see ?future::supportsMulticore
+cellchat <- identifyOverExpressedGenes(cellchat)
+cellchat <- identifyOverExpressedInteractions(cellchat)
+cellchat <- projectData(cellchat, PPI.human)
+
+#Inference of cell-cell communication network
+#Compute the communication probability and infer cellular communication network
+cellchat <- computeCommunProb(cellchat, raw.use = TRUE)
+# Filter out the cell-cell communication if there are only few number of cells in certain cell groups
+cellchat <- filterCommunication(cellchat, min.cells = 3)
+
+#Extract the inferred cellular communication network as a data frame
+df.net <- subsetCommunication(cellchat)
+
+#Infer the cell-cell communication at a signaling pathway level
+cellchat <- computeCommunProbPathway(cellchat)
+
+#Calculate the aggregated cell-cell communication network
+cellchat <- aggregateNet(cellchat)
+
+#Save the CellChat object
+saveRDS(cellchat, file = "D:/scRNA_KGD/20230826_10X_TN7172289/filter/TN.combined_19_20231101_Cellchat2_lesion.rds")
+cellchat <- readRDS(file = "D:/scRNA_KGD/20220914_10X_Keloid/filter/TN.combined_19_20231101_Cellchat2lesion.rds")
+
+
+
+##Comparison analysis of multiple datasets using CellChat
+#Load CellChat object of each dataset and then merge 
+cellchat.TN1 <- readRDS(file = "D:/scRNA_KGD/20230826_10X_TN7172289/filter/TN.combined_19_20231101_Cellchat1_nonlesion.rds")
+cellchat.TN2 <- readRDS(file = "D:/scRNA_KGD/20230826_10X_TN7172289/filter/TN.combined_19_20231101_Cellchat2_lesion.rds")
+#Adjust cell cluster numbers
+cellchat.TN1 <- liftCellChat(cellchat.TN1,group.new=levels(cellchat.TN2@idents))
+#Compute the network centrality scores
+cellchat.TN1 <- netAnalysis_computeCentrality(cellchat.TN1, slot.name = c("netP")) # the slot 'netP' means the inferred intercellular communication network of signaling pathways
+cellchat.TN2 <- netAnalysis_computeCentrality(cellchat.TN2, slot.name = c("netP")) # the slot 'netP' means the inferred intercellular communication network of signaling pathways
+object.list <- list( Healthy_skin = cellchat.TN1, AK = cellchat.TN2)
+cellchat <- mergeCellChat(object.list, add.names = names(object.list), cell.prefix = TRUE)
+
+##Predict general principles of cell-cell communication
+#Compare the total number of interactions and interaction strength
+gg1 <- compareInteractions(cellchat, show.legend = F, group = c(1,2), color.use = c("#00BFC4","#F8766D"))
+gg2 <- compareInteractions(cellchat, show.legend = F, group = c(1,2), measure = "weight",color.use = c("#00BFC4","#F8766D"))
+gg1 + gg2
+
+weight.max <- getMaxWeight(object.list, attribute = c("idents","weight"))
+par(mfrow = c(1,2), xpd=TRUE)
+for (i in 1:length(object.list)) {
+  netVisual_circle(object.list[[i]]@net$weight, vertex.label.cex = 0.9, weight.scale = T, label.edge= F, edge.weight.max = weight.max[2], edge.width.max = 12, title.name = paste0("Interaction strength - ", names(object.list)[i]))
+}
+
+#Compare the major sources and targets in 2D space
+num.link <- sapply(object.list, function(x) {rowSums(x@net$count) + colSums(x@net$count)-diag(x@net$count)})
+weight.MinMax <- c(min(num.link), max(num.link)) # control the dot size in the different datasets
+gg <- list()
+for (i in 1:length(object.list)) {
+  gg[[i]] <- netAnalysis_signalingRole_scatter(object.list[[i]], title = names(object.list)[i], weight.MinMax = weight.MinMax, label.size = 6)+ scale_y_continuous(limits = c(0,15)) + scale_x_continuous(limits = c(0,20))
+}
+patchwork::wrap_plots(plots = gg)
+
+#Identify and visualize the conserved and context-specific signaling pathways
+#Compare the overall information flow of each signaling pathway
+gg1 <- rankNet(cellchat, mode = "comparison", stacked = T, do.stat = TRUE, color.use = c("#00BFC4","#F8766D"), comparison = c(1,2))
+gg2 <- rankNet(cellchat, mode = "comparison", stacked = F, do.stat = TRUE, color.use = c("#00BFC4","#F8766D"),comparison = c(1,2))
+gg1 + gg2
+

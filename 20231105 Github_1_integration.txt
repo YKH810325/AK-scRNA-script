@@ -1,0 +1,312 @@
+##Load library
+library(Seurat)
+library(dplyr)
+library(ggsci)
+library(Matrix)
+library(ggpubr)
+library(cowplot)
+library(gridExtra)
+library(gplots)
+library(ggplot2)
+library(ggnewscale)
+library(tidyverse)
+library(DoubletFinder)
+
+##Load the dataset
+#AK_TN71#AK nonlesion 1
+SP1_AK_TN71.data <- Read10X(data.dir = "D:/scRNA_KGD/20230826_10X_TN7172289/filter/TN71")
+SP1_AK_TN71 <- CreateSeuratObject(counts = SP1_AK_TN71.data, project = "SP1_AK_TN71", min.cells = 3, min.features = 10)
+SP1_AK_TN71
+
+#AK_TN72#AK lesion 1
+SP2_AK_TN72.data <- Read10X(data.dir = "D:/scRNA_KGD/20230826_10X_TN7172289/filter/TN72")
+SP2_AK_TN72 <- CreateSeuratObject(counts = SP2_AK_TN72.data, project = "SP2_AK_TN72", min.cells = 3, min.features = 10)
+SP2_AK_TN72
+
+#AK_TN289#AK lesion 2
+SP3_AK_TN289.data <- Read10X(data.dir = "D:/scRNA_KGD/20230826_10X_TN7172289/filter/TN289")
+SP3_AK_TN289 <- CreateSeuratObject(counts = SP3_AK_TN289.data, project = "SP3_AK_TN289", min.cells = 3, min.features = 10)
+SP3_AK_TN289
+
+
+##Re-check
+SP1_AK_TN71
+SP2_AK_TN72
+SP3_AK_TN289
+
+
+##Quality control by Seurat package
+#SP1_AK_TN71
+#The operator can add columns to object metadata.
+SP1_AK_TN71$orig.ident1 <- "1_nonlesion"
+SP1_AK_TN71$orig.ident2 <- "SP1_AK_TN71"
+#The [[ operator can add columns to object metadata. This is a great place to stash QC stats
+SP1_AK_TN71[["percent.mt"]] <- PercentageFeatureSet(SP1_AK_TN71, pattern = "^MT-")
+#Show QC metrics for the first 5 cells
+head(SP1_AK_TN71@meta.data, 5)
+#Visualize QC metrics as a violin plot
+VlnPlot(SP1_AK_TN71, features = c("nFeature_RNA", "nCount_RNA", "percent.mt"), ncol = 3)
+#Filter out for Feature and mitochondria pct.
+SP1_AK_TN71 <- subset(SP1_AK_TN71, subset = nFeature_RNA > 600 & nFeature_RNA < 3500 & percent.mt < 30)
+
+#SP2_AK_TN72
+#The operator can add columns to object metadata.
+SP2_AK_TN72$orig.ident1 <- "2_lesion"
+SP2_AK_TN72$orig.ident2 <- "SP2_AK_TN72"
+#The [[ operator can add columns to object metadata. This is a great place to stash QC stats
+SP2_AK_TN72[["percent.mt"]] <- PercentageFeatureSet(SP2_AK_TN72, pattern = "^MT-")
+#Show QC metrics for the first 5 cells
+head(SP2_AK_TN72@meta.data, 5)
+#Visualize QC metrics as a violin plot
+VlnPlot(SP2_AK_TN72, features = c("nFeature_RNA", "nCount_RNA", "percent.mt"), ncol = 3)
+#Filter out for Feature and mitochondria pct.
+SP2_AK_TN72 <- subset(SP2_AK_TN72, subset = nFeature_RNA > 600 & nFeature_RNA < 3500 & percent.mt < 30)
+
+#SP3_AK_TN289
+#The operator can add columns to object metadata.
+SP3_AK_TN289$orig.ident1 <- "2_lesion"
+SP3_AK_TN289$orig.ident2 <- "SP3_AK_TN289"
+#The [[ operator can add columns to object metadata. This is a great place to stash QC stats
+SP3_AK_TN289[["percent.mt"]] <- PercentageFeatureSet(SP3_AK_TN289, pattern = "^MT-")
+#Show QC metrics for the first 5 cells
+head(SP3_AK_TN289@meta.data, 5)
+#Visualize QC metrics as a violin plot
+VlnPlot(SP3_AK_TN289, features = c("nFeature_RNA", "nCount_RNA", "percent.mt"), ncol = 3)
+#Filter out for Feature and mitochondria pct.
+SP3_AK_TN289 <- subset(SP3_AK_TN289, subset = nFeature_RNA > 600 & nFeature_RNA < 3500 & percent.mt < 30)
+
+
+##Re-check
+SP1_AK_TN71
+SP2_AK_TN72
+SP3_AK_TN289
+
+
+##Remove doublet cells by DoubletFinder package
+#SP1_AK_TN71
+#Run general flow of scRNA-seq by Seurat package
+SP1_AK_TN71 <- NormalizeData(object = SP1_AK_TN71)
+SP1_AK_TN71 <- FindVariableFeatures(object = SP1_AK_TN71)
+SP1_AK_TN71 <- ScaleData(object = SP1_AK_TN71)
+SP1_AK_TN71 <- RunPCA(object = SP1_AK_TN71)
+ElbowPlot(SP1_AK_TN71)
+SP1_AK_TN71 <- FindNeighbors(object = SP1_AK_TN71, dims = 1:50)
+SP1_AK_TN71 <- FindClusters(object = SP1_AK_TN71)
+SP1_AK_TN71 <- RunUMAP(object = SP1_AK_TN71, dims = 1:30)
+DimPlot(SP1_AK_TN71, reduction = "umap", label = T)
+#pK Identification (no ground-truth)
+sweep.res.list <- paramSweep_v3(SP1_AK_TN71, PCs = 1:20, sct = FALSE)
+sweep.stats <- summarizeSweep(sweep.res.list, GT = FALSE)
+bcmvn <- find.pK(sweep.stats)
+ggplot(bcmvn, aes(pK, BCmetric, group = 1)) + geom_point() + geom_line()
+pK <- bcmvn %>% filter(BCmetric == max(BCmetric)) %>% select(pK)
+pK <- as.numeric(as.character(pK[[1]]))
+head(pK)
+#Homotypic Doublet Proportion Estimate
+annotations <- SP1_AK_TN71@meta.data$seurat_clusters
+homotypic.prop <- modelHomotypic(annotations)
+nExp_poi <- round(0.08*nrow(SP1_AK_TN71@meta.data)) ## 8% doublet formation rate from 10X Genomics form if 10,000 cells are obtained.
+nExp_poi.adj <- round(nExp_poi*(1-homotypic.prop))
+head(nExp_poi.adj)
+#Identify doublet cells
+SP1_AK_TN71 <- doubletFinder_v3(SP1_AK_TN71, PCs = 1:20, pN = 0.25, pK = pK, nExp = nExp_poi.adj, reuse.pANN = FALSE, sct = FALSE)
+head(SP1_AK_TN71)
+DimPlot(SP1_AK_TN71, reduction = 'umap', group.by = "DF.classifications_0.25_0.01_244")
+table(SP1_AK_TN71@meta.data$DF.classifications_0.25_0.01_244)
+#Remove doublet cells
+SP1_AK_TN71 <- subset(SP1_AK_TN71, subset = DF.classifications_0.25_0.01_244 == "Singlet")
+DimPlot(SP1_AK_TN71, reduction = "umap", group.by="DF.classifications_0.25_0.01_244")
+SP1_AK_TN71
+
+#SP2_AK_TN72
+#Run general flow of scRNA-seq by Seurat package
+SP2_AK_TN72 <- NormalizeData(object = SP2_AK_TN72)
+SP2_AK_TN72 <- FindVariableFeatures(object = SP2_AK_TN72)
+SP2_AK_TN72 <- ScaleData(object = SP2_AK_TN72)
+SP2_AK_TN72 <- RunPCA(object = SP2_AK_TN72)
+ElbowPlot(SP2_AK_TN72)
+SP2_AK_TN72 <- FindNeighbors(object = SP2_AK_TN72, dims = 1:50)
+SP2_AK_TN72 <- FindClusters(object = SP2_AK_TN72)
+SP2_AK_TN72 <- RunUMAP(object = SP2_AK_TN72, dims = 1:30)
+DimPlot(SP2_AK_TN72, reduction = "umap", label = T)
+#pK Identification (no ground-truth)
+sweep.res.list <- paramSweep_v3(SP2_AK_TN72, PCs = 1:20, sct = FALSE)
+sweep.stats <- summarizeSweep(sweep.res.list, GT = FALSE)
+bcmvn <- find.pK(sweep.stats)
+ggplot(bcmvn, aes(pK, BCmetric, group = 1)) + geom_point() + geom_line()
+pK <- bcmvn %>% filter(BCmetric == max(BCmetric)) %>% select(pK)
+pK <- as.numeric(as.character(pK[[1]]))
+head(pK)
+#Homotypic Doublet Proportion Estimate
+annotations <- SP2_AK_TN72@meta.data$seurat_clusters
+homotypic.prop <- modelHomotypic(annotations)
+nExp_poi <- round(0.08*nrow(SP2_AK_TN72@meta.data)) ## 8% doublet formation rate from 10X Genomics form if 10,000 cells are obtained.
+nExp_poi.adj <- round(nExp_poi*(1-homotypic.prop))
+head(nExp_poi.adj)
+#Identify doublet cells
+SP2_AK_TN72 <- doubletFinder_v3(SP2_AK_TN72, PCs = 1:20, pN = 0.25, pK = pK, nExp = nExp_poi.adj, reuse.pANN = FALSE, sct = FALSE)
+head(SP2_AK_TN72)
+DimPlot(SP2_AK_TN72, reduction = 'umap', group.by = "DF.classifications_0.25_0.26_518")
+table(SP2_AK_TN72@meta.data$DF.classifications_0.25_0.26_518)
+#Remove doublet cells
+SP2_AK_TN72 <- subset(SP2_AK_TN72, subset = DF.classifications_0.25_0.26_518 == "Singlet")
+DimPlot(SP2_AK_TN72, reduction = "umap", group.by="DF.classifications_0.25_0.26_518")
+SP2_AK_TN72
+
+#SP3_AK_TN289
+#Run general flow of scRNA-seq by Seurat package
+SP3_AK_TN289 <- NormalizeData(object = SP3_AK_TN289)
+SP3_AK_TN289 <- FindVariableFeatures(object = SP3_AK_TN289)
+SP3_AK_TN289 <- ScaleData(object = SP3_AK_TN289)
+SP3_AK_TN289 <- RunPCA(object = SP3_AK_TN289)
+ElbowPlot(SP3_AK_TN289)
+SP3_AK_TN289 <- FindNeighbors(object = SP3_AK_TN289, dims = 1:50)
+SP3_AK_TN289 <- FindClusters(object = SP3_AK_TN289)
+SP3_AK_TN289 <- RunUMAP(object = SP3_AK_TN289, dims = 1:30)
+DimPlot(SP3_AK_TN289, reduction = "umap", label = T)
+#pK Identification (no ground-truth)
+sweep.res.list <- paramSweep_v3(SP3_AK_TN289, PCs = 1:20, sct = FALSE)
+sweep.stats <- summarizeSweep(sweep.res.list, GT = FALSE)
+bcmvn <- find.pK(sweep.stats)
+ggplot(bcmvn, aes(pK, BCmetric, group = 1)) + geom_point() + geom_line()
+pK <- bcmvn %>% filter(BCmetric == max(BCmetric)) %>% select(pK)
+pK <- as.numeric(as.character(pK[[1]]))
+head(pK)
+#Homotypic Doublet Proportion Estimate
+annotations <- SP3_AK_TN289@meta.data$seurat_clusters
+homotypic.prop <- modelHomotypic(annotations)
+nExp_poi <- round(0.08*nrow(SP3_AK_TN289@meta.data)) ## 8% doublet formation rate from 10X Genomics form if 10,000 cells are obtained.
+nExp_poi.adj <- round(nExp_poi*(1-homotypic.prop))
+head(nExp_poi.adj)
+#Identify doublet cells
+SP3_AK_TN289 <- doubletFinder_v3(SP3_AK_TN289, PCs = 1:20, pN = 0.25, pK = pK, nExp = nExp_poi.adj, reuse.pANN = FALSE, sct = FALSE)
+head(SP3_AK_TN289)
+DimPlot(SP3_AK_TN289, reduction = 'umap', group.by = "DF.classifications_0.25_0.02_509")
+table(SP3_AK_TN289@meta.data$DF.classifications_0.25_0.02_509)
+#Remove doublet cells
+SP3_AK_TN289 <- subset(SP3_AK_TN289, subset = DF.classifications_0.25_0.02_509 == "Singlet")
+DimPlot(SP3_AK_TN289, reduction = "umap", group.by="DF.classifications_0.25_0.02_509")
+SP3_AK_TN289
+
+
+##Re-check
+SP1_AK_TN71
+SP2_AK_TN72
+SP3_AK_TN289
+
+
+##Sample integration
+#Set merge file
+TN.C <- merge (SP1_AK_TN71, y = c(SP2_AK_TN72,SP3_AK_TN289), 
+               add.cell.ids = c("SP1_AK_TN71","SP2_AK_TN72","SP3_AK_TN289"), project = "groups")
+head(TN.C[[]])
+table(TN.C$orig.ident)
+#Set splitobject file
+TN.list<- SplitObject(TN.C, split.by = "orig.ident")
+TN.list
+TN.list <- lapply(X = TN.list, FUN = function(x) {
+  x <- NormalizeData(x,normalization.method = "LogNormalize", scale.factor = 10000)
+  x <- FindVariableFeatures(x, selection.method = "vst", nfeatures = 2000)
+})
+#select features that are repeatedly variable across datasets for integration
+features <- SelectIntegrationFeatures(object.list = TN.list)
+#Perform integration 
+reference.list <- TN.list[c("SP1_AK_TN71","SP2_AK_TN72","SP3_AK_TN289")]
+TN.anchors <- FindIntegrationAnchors(object.list = reference.list, dims = 1:30)
+#this command creates an 'integrated' data assay
+TN.combined <- IntegrateData(anchorset = TN.anchors, dims = 1:30)
+#Perform an integrated analysis
+#specify that we will perform downstream analysis on the corrected data note that the
+#original unmodified data still resides in the 'RNA' assay
+DefaultAssay(TN.combined) <- "integrated"
+#Run the standard workflow for visualization and clustering
+TN.combined <- ScaleData(TN.combined, verbose = TRUE)
+TN.combined <- RunPCA(TN.combined, npcs = 50, verbose = TRUE)
+ElbowPlot(TN.combined, ndims= 50)
+# Cluster the cells 
+TN.combined <- FindNeighbors(TN.combined, reduction = "pca", dims = 1:30)
+TN.combined <- FindClusters(TN.combined, resolution = 0.5)
+table(TN.combined@active.ident)
+table(Idents(TN.combined), TN.combined$orig.ident1)
+#Run UMAP
+TN.combined <- RunUMAP(TN.combined, reduction = "pca", dims = 1:30)
+DimPlot(TN.combined, reduction = "umap",label = FALSE, pt.size = 0.8)
+DimPlot(TN.combined, group.by = "orig.ident1", pt.size = 0.8, cols = c("#00BFC4","#F8766D")        
+#Run heatmap
+Heatmapall <- subset(TN.combined, idents = c(0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,17,18))
+Heatmapall.markers <- FindAllMarkers(Heatmapall, only.pos = TRUE, min.pct = 0.1, logfc.threshold = 0.25)
+head(Heatmapall.markers)
+write.csv(Heatmapall.markers , file = "C:/Users/user/Desktop/Findallmarkers.csv", col.names = TRUE) 
+top10 <- Heatmapall.markers %>% group_by(cluster) %>% top_n(n = 10, wt = avg_log2FC)
+DoHeatmap(Heatmapall, features = top10$gene)
+               
+        
+##Cell annotation by SingleR package
+#install SingleR
+BiocManager::install("SingleR")
+BiocManager::install("celldex")
+#SingleR
+library(SingleR)
+library(celldex)
+counts <- GetAssayData(TN.combined)
+#hpca database
+hpca.se <- HumanPrimaryCellAtlasData()
+hpca.se
+pred.hpca <- SingleR(test = counts, ref = hpca.se, assay.type.test=1,
+                             labels = hpca.se$label.main)
+pred.hpca
+table(pred.hpca$pruned.labels)
+clustering.table_hpca <- table(pred.hpca@listData[["pruned.labels"]], TN.combined@active.ident)
+clustering.table_hpca
+write.csv(clustering.table_hpca , file = "C:/Users/user/Desktop/SingleR_hpca.csv", col.names = TRUE) 
+#bpe database
+bpe.se <- BlueprintEncodeData()
+bpe.se
+pred.bpe <- SingleR(test = counts, ref = bpe.se, assay.type.test=1,
+                            labels = bpe.se$label.main)
+pred.bpe
+table(pred.bpe$pruned.labels)
+clustering.table_bpe <- table(pred.bpe@listData[["pruned.labels"]], TN.combined@active.ident)
+clustering.table_bpe
+write.csv(clustering.table_bpe , file = "C:/Users/user/Desktop/SingleR_bpe.csv", col.names = TRUE)
+
+       
+#Rename cluster
+new.cluster.ids <- c("C0_vEC","C1_vEC","C2_FB","C3_FB","C4_Tcell","C5_KC", 
+                             "C6_KC","C7_MYL","C8_Bcell","C9_SMC","C10_Tcell","C11_SMC",
+                             "C12_KC","C13_Bcell","C14_KC","C15_lEC","C16_unknown","C17_MLA",
+                             "C18_MC")
+names(new.cluster.ids) <- levels(TN.combined)
+TNname.combined <- RenameIdents(TN.combined, new.cluster.ids)
+DimPlot(TNname.combined, reduction = "umap",label = FALSE, pt.size = 0.8)
+DimPlot(TNname.combined, group.by = "orig.ident1", pt.size = 0.8, cols = c("#00BFC4","#F8766D"))
+
+#Reset order
+TNname.combined@active.ident <- factor(x=TNname.combined@active.ident, levels =c("C2_FB","C3_FB","C0_vEC","C1_vEC","C15_lEC",
+                                                                                         "C5_KC","C6_KC","C12_KC","C14_KC","C4_Tcell","C10_Tcell",
+                                                                                         "C7_MYL","C8_Bcell","C13_Bcell",
+                                                                                         "C9_SMC","C11_SMC",
+                                                                                         "C17_MLA","C18_MC","C16_unknown"))
+        
+#Draw featureplot by Seurat package
+DefaultAssay(TNname.combined) <- "RNA"
+#Classical markers
+FeaturePlot(TNname.combined, features = c("PDGFRA","VWF","KRT5","CD3D","CD68","CD79A","ACTA2",
+                                                  "VWA5A","LYVE1","MLANA"),combine = T,cols =  {c("lightgrey", "brown2") },  pt.size = 0.8)
+        
+        
+#Draw violinplot by scCustomize package
+library(scCustomize)
+library(qs)
+# Classical markers
+gene_list_plot <- c("PDGFRA","COL1A1","PECAM1","VWF","PROX1","LYVE1","KRT5","KRT16",
+                            "CD3D","GZMK","CD68","CD14","CD79A","MS4A1","ACTA2","RGS5",
+                            "MLANA","ADCYAP1","VWA5A")
+Stacked_VlnPlot(seurat_object = TNname.combined, features = gene_list_plot, x_lab_rotate = TRUE)
+# Bulk RNA-seq markers
+gene_list_plot <- c("SPP1","MMP9","ITGB2","LYZ","CD14","CD79A","GZMK","NKG7","IL6","IL17A","CXCL1","CXCL3","CXCL5",
+                            "CXCL6","CXCL13","TGFB1","COL1A1","COL1A2","COL3A1","COL5A1","COL5A2","COL6A1","COL6A2","COL6A3",
+                            "COL12A1","FN1","FAP","IGF1")
+Stacked_VlnPlot(seurat_object = TNname.combined, features = gene_list_plot, x_lab_rotate = TRUE)
+        
+        

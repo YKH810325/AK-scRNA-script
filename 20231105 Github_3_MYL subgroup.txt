@@ -1,0 +1,178 @@
+#Library
+library(Seurat)
+library(dplyr)
+library(ggsci)
+library(Matrix)
+library(ggpubr)
+library(cowplot)
+library(gridExtra)
+library(gplots)
+library(ggplot2)
+library(ggnewscale)
+
+##Read object
+TN.combined <- readRDS(file = "D:/scRNA_KGD/20230826_10X_TN7172289/filter/TN.combined_19_20231101.rds")
+F.subgroup <- subset(TN.combined, idents = c(7))
+DefaultAssay(F.subgroup) <- "RNA"
+# Show QC metrics for the first 5 cells
+head(F.subgroup@meta.data, 5)
+#Set splitobject file
+F.list<- SplitObject(F.subgroup, split.by = "orig.ident")
+F.list
+F.list <- lapply(X = F.list, FUN = function(x) {
+  x <- NormalizeData(x,normalization.method = "LogNormalize", scale.factor = 10000)
+  x <- FindVariableFeatures(x, selection.method = "vst", nfeatures = 2000)
+})
+#Perform integration 
+F.reference.list <- F.list[c("SP1_AK_TN71","SP2_AK_TN72","SP3_AK_TN289")]
+F.anchors <- FindIntegrationAnchors(object.list = F.reference.list, dims = 1:30)
+F.combined <- IntegrateData(anchorset = F.anchors, dims = 1:30, k.weight = 40)
+#Perform an integrated analysis
+DefaultAssay(F.combined) <- "integrated"
+F.combined <- ScaleData(F.combined, verbose = TRUE)
+F.combined <- RunPCA(F.combined, npcs = 50, verbose = TRUE)
+ElbowPlot(F.combined, ndims= 50)
+# Cluster the cells
+F.combined <- FindNeighbors(F.combined, reduction = "pca", dims = 1:50)
+F.combined <- FindClusters(F.combined, resolution = 0.22)
+table(F.combined@active.ident)
+table(Idents(F.combined), F.combined$orig.ident1)
+#Run UMAP
+F.combined <- RunUMAP(F.combined, reduction = "pca", dims = 1:50)
+DimPlot(F.combined, reduction = "umap",label = FALSE, pt.size = 0.8)
+DimPlot(F.combined, group.by = "orig.ident1", pt.size = 0.8)
+##Run heatmap
+Heatmapall <- subset(Fname.subgroup, idents = c(0,1,2))
+Heatmapall.markers <- FindAllMarkers(Heatmapall, only.pos = TRUE, min.pct = 0.1, logfc.threshold = 0.25)
+head(Heatmapall.markers)
+write.csv(Heatmapall.markers , file = "C:/Users/user/Desktop/M.allmarkers.csv", col.names = TRUE) 
+top10 <- Heatmapall.markers %>% group_by(cluster) %>% top_n(n = 10, wt = avg_log2FC)
+DoHeatmap(Heatmapall, features = top10$gene)
+
+
+##Rename cluster 
+new.cluster.ids <- c("Ms0","Ms1","Ms2")
+names(new.cluster.ids) <- levels(F.combined)
+Fname.subgroup <- RenameIdents(F.combined, new.cluster.ids)
+DimPlot(Fname.subgroup, reduction = "umap",label = FALSE, pt.size = 0.8)
+DimPlot(Fname.subgroup, group.by = "orig.ident1", pt.size = 0.8, cols = c("#00BFC4","#F8766D"))
+
+##Pathway analysis by clusterProfiler package
+#Library
+library(clusterProfiler)
+#Find markers
+cluster.markers <- FindMarkers(object = F.combined, ident.1 = "0", logfc.threshold = 0.25, only.pos = TRUE)
+write.csv(cluster.markers , file = "C:/Users/user/Desktop/Fs0.allmarkers.csv", col.names = TRUE) 
+cluster <- row.names.data.frame(cluster.markers)
+cluster <- bitr(cluster,fromType = "SYMBOL",toType = c("ENTREZID"),OrgDb = "org.Hs.eg.db")
+#GO pathway analysis
+cluster.go<-enrichGO(gene=cluster[,"ENTREZID"],keyType = "ENTREZID",OrgDb="org.Hs.eg.db",ont = "ALL",pAdjustMethod = "BH",readable = TRUE)
+head(summary(cluster.go))
+dotplot(cluster.go,showCategory=10)
+write.csv(cluster.go, file = "C:/Users/user/Desktop/Fs0_GO.csv")
+
+
+#Draw Dotplot
+DefaultAssay(Fname.subgroup) <- "RNA"
+#Representive markers of myeloid subgroup 
+markers.to.plot <- c("CD163","MRC1","CCL18","LGMN","CD86","IL1B","CXCL8","AREG","CTSK","MMP9","RAC2","SPP1")
+DotPlot(Fname.subgroup, features = markers.to.plot, cols = c("white", "darkred"), dot.scale = 8) + RotatedAxis()
+
+
+
+##Cell trajectory by monocle
+library(monocle)
+Fibroblast.subgroup <- Fname.subgroup
+
+#Monocle2 
+data <- as(as.matrix(Fibroblast.subgroup@assays$RNA@data), 'sparseMatrix')
+pd <- new('AnnotatedDataFrame', data = Fibroblast.subgroup@meta.data)
+fData <- data.frame(gene_short_name = row.names(data), row.names = row.names(data))
+fd <- new('AnnotatedDataFrame', data = fData)
+Fibroblast.subgroup <- newCellDataSet(data,phenoData = pd,featureData = fd,lowerDetectionLimit = 0.25,expressionFamily = negbinomial.size())
+Fibroblast.subgroup
+
+#View data
+pData(Fibroblast.subgroup)
+fData(Fibroblast.subgroup)
+
+#Estimate size factors and dispersions
+Fibroblast.subgroup <- estimateSizeFactors(Fibroblast.subgroup)
+Fibroblast.subgroup <- estimateDispersions(Fibroblast.subgroup)
+
+#Filtering low-quality cells 
+Fibroblast.subgroup <- detectGenes(Fibroblast.subgroup, min_expr = 0.1)
+print(head(pData(Fibroblast.subgroup)))
+expressed_genes <- row.names(subset(fData(Fibroblast.subgroup),num_cells_expressed >= 5))
+L <- log(exprs(Fibroblast.subgroup[expressed_genes,]))
+mL <- apply(L,1,function(x){mean(x[is.finite(x)])})
+sdL <- apply(L,1,function(x){sd(x[is.finite(x)])})
+Lstd <- (L-mL)/sdL
+
+library(reshape)
+#melted_dens_df <- melt(Matrix::t(scale(Matrix::t(L))))
+#                                 ^^^^^
+
+melted_dens_df <- melt(as.matrix(Lstd))
+qplot(value, geom = "density", data = melted_dens_df) +stat_function(fun = dnorm, size = 0.5, color = 'red') +xlab("Standardized log(FPKM)") + ylab("Density")
+
+
+#Alternative choices for cell trajectory by ordering genes
+Fibroblast.subgroup <- detectGenes(Fibroblast.subgroup, min_expr = 0.1)
+fData(Fibroblast.subgroup)$use_for_ordering <-
+  fData(Fibroblast.subgroup)$num_cells_expressed > 0.05 * ncol(Fibroblast.subgroup)
+plot_pc_variance_explained(Fibroblast.subgroup, return_all = F)
+Fibroblast.subgroup <- reduceDimension(Fibroblast.subgroup,
+                                       max_components = 2,
+                                       norm_method = 'log',
+                                       num_dim = 3,
+                                       reduction_method = 'tSNE',
+                                       verbose = T)
+Fibroblast.subgroup <- clusterCells(Fibroblast.subgroup, verbose = F)
+plot_cell_clusters(Fibroblast.subgroup, color_by = 'as.factor(seurat_clusters)')
+
+plot_rho_delta(Fibroblast.subgroup, rho_threshold = 2, delta_threshold = 4 )
+Fibroblast.subgroup <- clusterCells(Fibroblast.subgroup,
+                                    rho_threshold = 2,
+                                    delta_threshold = 4,
+                                    skip_rho_sigma = T,
+                                    verbose = F)
+plot_cell_clusters(Fibroblast.subgroup, color_by = 'as.factor(seurat_clusters)')
+clustering_DEG_genes <-
+  differentialGeneTest(Fibroblast.subgroup[expressed_genes,],
+                       fullModelFormulaStr = '~Cluster',
+                       cores = 1)
+
+ordering_genes <-
+  row.names(clustering_DEG_genes)[order(clustering_DEG_genes$qval)][1:1000]
+
+Fibroblast.subgroup <-
+  setOrderingFilter(Fibroblast.subgroup,
+                    ordering_genes = ordering_genes)
+
+Fibroblast.subgroup <-
+  reduceDimension(Fibroblast.subgroup, method = 'DDRTree')
+
+Fibroblast.subgroup <-
+  orderCells(Fibroblast.subgroup)
+
+plot_cell_trajectory(Fibroblast.subgroup, color_by = "seurat_clusters")
+
+plot_cell_trajectory(Fibroblast.subgroup, color_by = "State")
+
+Fibroblast.subgroup <- orderCells(Fibroblast.subgroup, root_state = 11)
+
+plot_cell_trajectory(Fibroblast.subgroup, color_by = "Pseudotime")
+
+plot_cell_trajectory(Fibroblast.subgroup, color_by = "seurat_clusters") +
+  facet_wrap(~orig.ident1, nrow = 1)
+
+
+#Find genes that change as a function of pseudotime
+to_be_tested <- row.names(subset(fData(Fibroblast.subgroup),
+                                 gene_short_name %in% c("IL1B","CD86","CD163","CCL18","SPP1","MMP9")))
+cds_subset <- Fibroblast.subgroup[to_be_tested,]
+diff_test_res <- differentialGeneTest(cds_subset,
+                                      fullModelFormulaStr = "~sm.ns(Pseudotime)")
+diff_test_res[,c("gene_short_name", "pval", "qval")]
+plot_genes_in_pseudotime(cds_subset, color_by = "seurat_clusters", panel_order = c("IL1B","CD86","CD163","CCL18","SPP1","MMP9"))
